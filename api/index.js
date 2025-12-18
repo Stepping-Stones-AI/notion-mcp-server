@@ -11,7 +11,7 @@ const notion = new Client({
   auth: process.env.NOTION_API_KEY,
 });
 
-// MCP Protocol Handlers
+// MCP Tools Definitions
 const tools = [
   {
     name: 'notion_search_pages',
@@ -108,9 +108,21 @@ const tools = [
   },
 ];
 
-// MCP Endpoints
+// SSE Helper function
+function sendSSEEvent(res, event, data) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+// MCP SSE Endpoint
 app.get('/api', (req, res) => {
-  res.json({
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  // Send initial connection message
+  sendSSEEvtnt(res, 'connected', {
     name: 'Notion MCP Server',
     version: '1.0.0',
     protocol: 'mcp',
@@ -118,95 +130,124 @@ app.get('/api', (req, res) => {
       tools: true,
     },
   });
+
+  // Keep connection alive with heartbeats
+  const heartbeatInterval = setInterval(() => {
+    sendSSEEvtnt(res, 'ping', { timestamp: Date.now() });
+  }, 30000); // Every 30 seconds
+
+  // Clean up on close
+  req.on('close', () => {
+    clearInterval(heartbeatInterval);
+  });
 });
 
-app.post('/api/tools/list', (req, res) => {
-  res.json({ tools });
-});
+// POST support for tool calls
+app.post('/api', async (req, res) => {
+  const { method, params } = req.body;
 
-app.post('/api/tools/call', async (req, res) => {
-  const { name, arguments: args } = req.body;
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
 
   try {
     let result;
 
-    switch (name) {
-      case 'notion_search_pages':
-        result = await notion.search({
-          query: args.query || '',
-          filter: args.filter_value ? { property: 'object', value: args.filter_value } : undefined,
-        });
-        break;
-
-      case 'notion_create_page':
-        result = await notion.pages.create({
-          parent: { page_id: args.parent_id },
-          properties: {
-            title: {
-              title: [{ text: { content: args.title } }],
-            },
-          },
-        });
-        break;
-
-      case 'notion_append_blocks':
-        result = await notion.blocks.children.append({
-          block_id: args.block_id,
-          children: args.children,
-        });
-        break;
-
-      case 'notion_query_database':
-        result = await notion.databases.query({
-          database_id: args.database_id,
-          sorts: args.sorts,
-        });
-        break;
-
-      case 'notion_create_database_row':
-        const properties = {};
-        args.properties.forEach(prop => {
-          properties[prop.name] = formatPropertyValue(prop);
-        });
-        result = await notion.pages.create({
-          parent: { database_id: args.database_id },
-          properties,
-        });
-        break;
-
-      case 'notion_update_page':
-        const updateProps = {};
-        if (args.properties) {
-          args.properties.forEach(prop => {
-            updateProps[prop.name] = formatPropertyValue(prop);
-          });
-        }
-        result = await notion.pages.update({
-          page_id: args.page_id,
-          properties: updateProps,
-        });
-        break;
-
-      case 'notion_get_block_children':
-        result = await notion.blocks.children.list({
-          block_id: args.block_id,
-        });
-        break;
-
-      case 'notion_archive_page':
-        result = await notion.pages.update({
-          page_id: args.page_id,
-          archived: true,
-        });
-        break;
-
-      default:
-        return res.status(400).json({ error: 'Unknown tool' });
+    if (method === 'tools/list') {
+      sendSSEEvtnt(res, 'result', { tools });
+      res.end();
+      return;
     }
 
-    res.json({ content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+    if (method === 'tools/call') {
+      const { name, arguments: args } = params;
+
+      switch (name) {
+        case 'notion_search_pages':
+          result = await notion.search({
+            query: args.query || '',
+            filter: args.filter_value ? { property: 'object', value: args.filter_value } : undefined,
+          });
+          break;
+
+        case 'notion_create_page':
+          result = await notion.pages.create({
+            parent: { page_id: args.parent_id },
+            properties: {
+              title: {
+                title: [{ text: { content: args.title } }],
+              },
+            },
+          });
+          break;
+
+        case 'notion_append_blocks':
+          result = await notion.blocks.children.append({
+            block_id: args.block_id,
+            children: args.children,
+          });
+          break;
+
+        case 'notion_query_database':
+          result = await notion.databases.query({
+            database_id: args.database_id,
+            sorts: args.sorts,
+          });
+          break;
+
+        case 'notion_create_database_row':
+          const properties = {};
+          args.properties.forEach(prop => {
+            properties[prop.name] = formatPropertyValue(prop);
+          });
+          result = await notion.pages.create({
+            parent: { database_id: args.database_id },
+            properties,
+          });
+          break;
+
+        case 'notion_update_page':
+          const updateProps = {};
+          if (args.properties) {
+            args.properties.forEach(prop => {
+              updateProps[prop.name] = formatPropertyValue(prop);
+            });
+          }
+          result = await notion.pages.update({
+            page_id: args.page_id,
+            properties: updateProps,
+          });
+          break;
+
+        case 'notion_get_block_children':
+          result = await notion.blocks.children.list({
+            block_id: args.block_id,
+          });
+          break;
+
+        case 'notion_archive_page':
+          result = await notion.pages.update({
+            page_id: args.page_id,
+            archived: true,
+          });
+          break;
+
+        default:
+          sendSSEEvtnt(res, 'error', { error: 'Unknown tool' });
+          res.end();
+          return;
+      }
+
+      sendSSEEvtnt(res, 'result', { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] });
+    } else {
+      sendSSEEvtnt(res, 'error', { error: 'Unknown method' });
+    }
+
+    res.end();
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    sendSSEEvtnt(res, 'error', { error: error.message });
+    res.end();
   }
 });
 
