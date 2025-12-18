@@ -1,0 +1,19 @@
+{
+  "name": "notion-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP Server for Notion integration with ChatGPT",
+  "main": "api/index.js",
+  "scripts": {
+    "dev": "node api/index.js",
+    "start": "node api/index.js"
+  },
+  "dependencies": {
+    "@notionhq/client": "^2.2.15",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1"
+  },
+  "engines": {
+    "node": ">=18.x"
+  }
+}
